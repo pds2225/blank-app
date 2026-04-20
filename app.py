@@ -1,25 +1,50 @@
+"""
+자동개발루프 시스템 - Streamlit Cloud
+API 키는 Cloud Secrets에서 자동 읽기
+"""
+
 import streamlit as st
+import os
+import json
 import time
 import threading
 from datetime import datetime
 
 try:
-    import openai
+    from openai import OpenAI
 except ImportError:
-    openai = None
+    OpenAI = None
 
-st.set_page_config(page_title="자동개발루프", page_icon="⚡", layout="centered")
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
 
+# ─── 페이지 설정 ─────────────────────────────────────────────
+st.set_page_config(
+    page_title="자동개발루프",
+    page_icon="⚡",
+    layout="centered",
+)
+
+# ─── 스타일 ─────────────────────────────────────────────────
 st.markdown("""
 <style>
     .stApp { background: #0a0e14; }
+    .block-container { padding-top: 2rem; max-width: 800px; }
+
     div[data-testid="stMetric"] {
         background: #111820;
         border: 1px solid #2a3444;
         border-radius: 12px;
         padding: 1rem;
     }
-    div[data-testid="stMetric"] label { color: #6b7a8d !important; }
+
+    div[data-testid="stMetric"] label {
+        color: #6b7a8d !important;
+        font-size: 0.75rem !important;
+    }
+
     .log-box {
         background: #111820;
         border: 1px solid #2a3444;
@@ -34,17 +59,55 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-if "running" not in st.session_state:
-    st.session_state.running = False
-if "stage" not in st.session_state:
-    st.session_state.stage = "대기 중"
-if "cycles" not in st.session_state:
-    st.session_state.cycles = 0
-if "logs" not in st.session_state:
-    st.session_state.logs = []
-if "final_code" not in st.session_state:
-    st.session_state.final_code = ""
 
+# ─── 모델 목록 ───────────────────────────────────────────────
+MODELS = {
+    # OpenAI
+    "GPT-4o":           {"provider": "openai",    "model": "gpt-4o"},
+    "GPT-4o mini":      {"provider": "openai",    "model": "gpt-4o-mini"},
+    "GPT-4 Turbo":      {"provider": "openai",    "model": "gpt-4-turbo"},
+    "o3-mini":          {"provider": "openai",    "model": "o3-mini"},
+    "o1":               {"provider": "openai",    "model": "o1"},
+    # Anthropic (Claude)
+    "Claude 3.5 Sonnet": {"provider": "anth-5-sonnet-20241022"},
+    "Claude 3.5 Haiku":  {"provider": "anthropic", "model": "claude-3-5-haiku-20241022"},
+    "Claude 3 Opus":     {"provider": "anthropic", "model": "claude-3-opus-20240229"},
+}
+
+
+# ─── API 키 로드 (Secrets 우선, UI 입력은 비상용) ───────────
+def get_api_keys():
+    """Streamlit Cloud Secrets에서 자동 로드"""
+    openai_key = ""
+    anthropic_key = ""
+
+    try:
+        openai_key = st.secrets["OPENAI_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+
+    try:
+        anthropic_key = st.secrets["ANTHROPIC_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    return openai_key, anthropic_key
+
+
+# ─── 세션 초기화 ─────────────────────────────────────────────
+def init():
+    for k, v in {
+        "running": False,
+        "stage": "대기 중",
+        "cycles": 0,
+        "logs": [],
+        "code_input": "",
+    }.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+# ─── 로그 ────────────────────────────────────────────────────
 def log(msg, level="info"):
     st.session_state.logs.append({
         "t": datetime.now().strftime("%H:%M:%S"),
@@ -54,122 +117,255 @@ def log(msg, level="info"):
     if len(st.session_state.logs) > 200:
         st.session_state.logs = st.session_state.logs[-200:]
 
-def call_ai(prompt, api_key, model="gpt-4o"):
-    if not openai:
-        return False, "openai 패키지가 설치되지 않았습니다."
+
+# ─── AI 호출 ─────────────────────────────────────────────────
+def call_openai(prompt, api_key, model):
+    if not OpenAI:
+        return False, "openai 패키지 미설치"
     try:
-        client = openai.OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "당신은 전문 개발자입니다. 코드를 분석하고 개선합니다. 개선된 전체 코드만 반환하세요."},
+                {"role": "system", "content": "당신은 전문 개발자입니다. 코드를 분석하고 개선합니다."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
             max_tokens=4000,
         )
-        return True, response.choices[0].message.content
+        return True, resp.choices[0].message.content
     except Exception as e:
         return False, str(e)
 
-def run_cycle(code, api_key, model):
-    stages = [
-        ("하드닝", "다음 코드를 보안, 성능, 가독성 관점에서 개선하세요. 전체 코드를 반환하세요.\n\n"),
-        ("디버그", "다음 코드의 버그를 찾아 수정하세요. 전체 코드를 반환하세요.\n\n"),
-    ]
-    current = code
-    for name, prefix in stages:
-        if not st.session_state.running:
-            return None
-        st.session_state.stage = name
-        log(f"[{name}] 시작...", "info")
-        ok, result = call_ai(prefix + current, api_key, model)
-        if ok:
-            log(f"[{name}] 완료", "success")
-            current = result
-        else:
-            log(f"[{name}] 실패: {result[:100]}", "error")
-            return None
-        time.sleep(1)
-    return current
 
-def worker(code, api_key, model):
-    log("루프 시작", "success")
-    cur = code
-    while st.session_state.running and st.session_state.cycles < 10:
+def call_anthropic(prompt, api_key, model):
+    if not anthropic:
+        return False, "anthropic 패키지 미설치"
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=model,
+            max_tokens=4000,
+            system="당신은 전문 개발자입니다. 코드를 분석하고 개선합니다.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return True, resp.content[0].text
+    except Exception as e:
+        return False, str(e)
+
+
+def call_ai(prompt, model_name):
+    """모델 이름에 따라 적절한 API 호출"""
+    config = MODELS[model_name]
+    openai_key, anthropic_key = get_api_keys()
+
+    if config["provider"] == "openai":
+        if not openai_key:
+            return False, "OpenAI API 키가 Secrets에 설정되지 않았습니다"
+        return call_openai(prompt, openai_key, config["model"])
+
+    elif config["provider"] == "anthropic":
+        if not anthropic_key:
+            return False, "Anthropic API 키가 Secrets에 설정되지 않았습니다"
+        return call_anthropic(prompt, anthropic_key, config["model"])
+
+    return False, "알 수 없는 모델"
+
+
+# ─── 루프 ────────────────────────────────────────────────────
+def run_cycle(code, model_name):
+    stages =ropic", "model": "claude-3 [
+        ("하드닝 (개선)", "다음 코드를 분석하고 개선하세요. 보안, 성능, 가독성을 향상시키세요.\n\n코드:\n"),
+        ("디버그", "다음 코드의 버그를 찾아 수정하세요.\n\n코드:\n"),
+    ]
+
+    current_code = code
+
+    for stage_name, prompt_prefix in stages:
+        if not st.session_state.running:
+            log("루프 중지됨", "warn")
+            return None
+
+        st.session_state.stage = stage_name
+        log(f"[{stage_name}] 시작... (모델: {model_name})", "info")
+
+        full_prompt = prompt_prefix + current_code
+        success, result = call_ai(full_prompt, model_name)
+
+        if success:
+            log(f"[{stage_name}] 완료 ✓", "success")
+            current_code = result
+        else:
+            log(f"[{stage_name}] 실패: {result[:150]}", "error")
+            return None
+
+        time.sleep(1)
+
+    return current_code
+
+
+def loop_worker(code, model_name):
+    log("자동개발루프 시작", "success")
+    current_code = code
+    max_cycles = 10
+
+    while st.session_state.running and st.session_state.cycles < max_cycles:
         st.session_state.cycles += 1
-        log(f"=== 사이클 {st.session_state.cycles} ===", "info")
-        r = run_cycle(cur, api_key, model)
-        if r is None:
+        log(f"═══ 사이클 {st.session_state.cycles} ═══", "info")
+
+        result = run_cycle(current_code, model_name)
+        if result is None:
             break
-        cur = r
+        current_code = result
+        log(f"═══ 사이클 {st.session_state.cycles} 완료 ═══", "info")
         time.sleep(2)
+
     st.session_state.running = False
     st.session_state.stage = "대기 중"
-    st.session_state.final_code = cur
+    st.session_state.final_code = current_code
     log("루프 종료", "warn")
 
-st.markdown("<h1 style='text-align:center'>⚡ 자동개발루프</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align:center;color:#6b7a8d'>코드 넣고 ON 누르면 자동 개선</p>", unsafe_allow_html=True)
 
+# ─── 토글 ────────────────────────────────────────────────────
 def on_toggle():
     if st.session_state.toggle:
-        code = st.session_state.get("code_input", "")
-        key = st.session_state.get("api_key", "")
+        code = st.session_state.code_input
+        model_name = st.session_state.model_choice
+
         if not code.strip():
-            log("코드를 입력하세요", "error")
+            log("코드를 입력하세요.", "error")
             st.session_state.toggle = False
             return
-        if not key.strip():
-            log("API 키를 입력하세요", "error")
+
+        # 키 확인
+        openai_key, anthropic_key = get_api_keys()
+        config = MODELS[model_name]
+
+        if config["provider"] == "openai" and not openai_key:
+            log("OpenAI API 키가 없습니다. Secrets를 확인하세요.", "error")
             st.session_state.toggle = False
             return
+
+        if config["provider"] == "anthropic" and not anthropic_key:
+            log("Anthropic API 키가 없습니다. Secrets를 확인하세요.", "error")
+            st.session_state.toggle = False
+            return
+
         st.session_state.running = True
         st.session_state.cycles = 0
         st.session_state.logs = []
-        st.session_state.final_code = ""
-        model = st.session_state.get("model", "gpt-4o")
-        threading.Thread(target=worker, args=(code, key, model), daemon=True).start()
-        log("시작!", "success")
+
+        t = threading.Thread(
+            target=loop_worker,
+            args=(code, model_name),
+            daemon=True,
+        )
+        t.start()
+        log("루프 시작...", "success")
     else:
         st.session_state.running = False
-        log("중지", "warn")
+        log("사용자가 중지함", "warn")
 
-st.toggle(" ", value=st.session_state.running, key="toggle", on_change=on_toggle, label_visibility="collapsed")
-st.divider()
 
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.metric("상태", "실행 중" if st.session_state.running else "대기 중")
-with c2:
-    st.metric("단계", st.session_state.stage)
-with c3:
-    st.metric("사이클", st.session_state.cycles)
+# ─── 메인 UI ─────────────────────────────────────────────────
+def main():
+    init()
+    openai_key, anthropic_key = get_api_keys()
 
-st.divider()
+    # 키 상태 표시 (값은 안 보여줌)
+    key_status = []
+    if openai_key:
+        key_status.append("OpenAI ✓")
+    if anthropic_key:
+        key_status.append("Anthropic ✓")
 
-with st.expander("설정"):
-    st.text_input("OpenAI API 키", type="password", key="api_key", placeholder="sk-...", disabled=st.session_state.running)
-    st.selectbox("모델", ["gpt-4o", "gpt-4o-mini"], key="model", disabled=st.session_state.running)
+    st.markdown("<h1 style='text-align:center;'>⚡ 자동개발루프</h1>", unsafe_allow_html=True)
 
-st.text_area("코드 입력", height=200, key="code_input", placeholder="여기에 코드를 붙여넣으세요...", disabled=st.session_state.running)
+    if key_status:
+        st.caption(f"연결됨: {' | '.join(key_status)}")
+    else:
+        st.error("API 키가 설정되지 않았습니다. Streamlit Cloud > Settings > Secrets에서 설정하세요.")
+        st.code("""
+# Secrets에 아래 형식으로 추가:
+OPENAI_API_KEY = "sk-proj-xxxxx"
+ANTHROPIC_API_KEY = "sk-ant-xxxxx"
+        """)
+        return
 
-st.divider()
-st.markdown("### 로그")
+    st.markdown("<p style='text-align:center; color:#6b7a8d;'>코드를 넣고 버튼 하나로 자동 개선</p>", unsafe_allow_html=True)
 
-if st.session_state.logs:
-    html = '<div class="log-box">'
-    for l in reversed(st.session_state.logs):
-        c = {"info":"#e4e8ef","success":"#00d4aa","error":"#ff4757","warn":"#ffa502"}.get(l["level"], "#e4e8ef")
-        html += f'<div style="color:{c}"><span style="color:#6b7a8d">{l["t"]}</span> {l["msg"]}</div>'
-    html += '</div>'
-    st.markdown(html, unsafe_allow_html=True)
+    # ─── 토글 ───
+    st.toggle(" ", value=st.session_state.running, key="toggle",
+              on_change=on_toggle, label_visibility="collapsed")
 
-if st.session_state.final_code:
     st.divider()
-    st.markdown("### 결과")
-    st.code(st.session_state.final_code)
 
-if st.session_state.running:
-    time.sleep(1)
-    st.rerun()
+    # ─── 상태 ───
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("상태", "실행 중" if st.session_state.running else "대기 중")
+    with c2:
+        st.metric("단계", st.session_state.stage)
+    with c3:
+        st.metric("사이클", st.session_state.cycles)
+
+    st.divider()
+
+    # ─── 모델 선택 ───
+    # 사용 가능한 모델만 필터링
+    available_models = []
+    for name, cfg in MODELS.items():
+        if cfg["provider"] == "openai" and openai_key:
+            available_models.append(name)
+        elif cfg["provider"] == "anthropic" and anthropic_key:
+            available_models.append(name)
+
+    st.selectbox(
+        "모델 선택",
+        available_models,
+        key="model_choice",
+        disabled=st.session_state.running,
+    )
+
+    # ─── 코드 입력 ───
+    st.text_area(
+        "코드 입력",
+        height=200,
+        key="code_input",
+        placeholder="여기에 개선할 코드를 붙여넣으세요...",
+        disabled=st.session_state.running,
+    )
+
+    st.divider()
+
+    # ─── 로그 ───
+    st.markdown("### 📋 로그")
+
+    if st.session_state.logs:
+        html = '<div class="log-box">'
+        for l in reversed(st.session_state.logs):
+            color = {
+                "info": "#e4e8ef",
+                "success": "#00d4aa",
+                "error": "#ff4757",
+                "warn": "#ffa502",
+            }.get(l["level"], "#e4e8ef")
+            html += f'<div style="color:{color}"><span style="color:#6b7a8d">{l["t"]}</span> {l["msg"]}</div>'
+        html += "</div>"
+        st.markdown(html, unsafe_allow_html=True)
+    else:
+        st.info("로그가 여기에 표시됩니다")
+
+    # ─── 결과 ───
+    if "final_code" in st.session_state and st.session_state.final_code:
+        st.divider()
+        st.markdown("### ✅ 최종 결과")
+        st.code(st.session_state.final_code, language="python")
+
+    if st.session_state.running:
+        time.sleep(1)
+        st.rerun()
+
+
+if __name__ == "__main__":
+    main()
