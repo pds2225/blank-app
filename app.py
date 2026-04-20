@@ -63,21 +63,19 @@ st.markdown("""
 # ─── 모델 목록 ───────────────────────────────────────────────
 MODELS = {
     # OpenAI
-    "GPT-4o":           {"provider": "openai",    "model": "gpt-4o"},
-    "GPT-4o mini":      {"provider": "openai",    "model": "gpt-4o-mini"},
-    "GPT-4 Turbo":      {"provider": "openai",    "model": "gpt-4-turbo"},
-    "o3-mini":          {"provider": "openai",    "model": "o3-mini"},
-    "o1":               {"provider": "openai",    "model": "o1"},
+    "GPT-4o":            {"provider": "openai",    "model": "gpt-4o"},
+    "GPT-4o mini":       {"provider": "openai",    "model": "gpt-4o-mini"},
+    "GPT-4 Turbo":       {"provider": "openai",    "model": "gpt-4-turbo"},
+    "o3-mini":           {"provider": "openaio1":                {"provider": "openai",    "model": "o1"},
     # Anthropic (Claude)
-    "Claude 3.5 Sonnet": {"provider": "anth-5-sonnet-20241022"},
+    "Claude 3.5 Sonnet": {"provider": "anthropic", "model": "claude-3-5-sonnet-20241022"},
     "Claude 3.5 Haiku":  {"provider": "anthropic", "model": "claude-3-5-haiku-20241022"},
     "Claude 3 Opus":     {"provider": "anthropic", "model": "claude-3-opus-20240229"},
 }
 
 
-# ─── API 키 로드 (Secrets 우선, UI 입력은 비상용) ───────────
+# ─── API 키 로드 (Secrets 우선) ─────────────────────────────
 def get_api_keys():
-    """Streamlit Cloud Secrets에서 자동 로드"""
     openai_key = ""
     anthropic_key = ""
 
@@ -155,7 +153,6 @@ def call_anthropic(prompt, api_key, model):
 
 
 def call_ai(prompt, model_name):
-    """모델 이름에 따라 적절한 API 호출"""
     config = MODELS[model_name]
     openai_key, anthropic_key = get_api_keys()
 
@@ -174,7 +171,7 @@ def call_ai(prompt, model_name):
 
 # ─── 루프 ────────────────────────────────────────────────────
 def run_cycle(code, model_name):
-    stages =ropic", "model": "claude-3 [
+    stages = [
         ("하드닝 (개선)", "다음 코드를 분석하고 개선하세요. 보안, 성능, 가독성을 향상시키세요.\n\n코드:\n"),
         ("디버그", "다음 코드의 버그를 찾아 수정하세요.\n\n코드:\n"),
     ]
@@ -182,36 +179,8 @@ def run_cycle(code, model_name):
     current_code = code
 
     for stage_name, prompt_prefix in stages:
-        if not st.session_state.running:
-            log("루프 중지됨", "warn")
-            return None
-
-        st.session_state.stage = stage_name
-        log(f"[{stage_name}] 시작... (모델: {model_name})", "info")
-
-        full_prompt = prompt_prefix + current_code
-        success, result = call_ai(full_prompt, model_name)
-
-        if success:
-            log(f"[{stage_name}] 완료 ✓", "success")
-            current_code = result
-        else:
-            log(f"[{stage_name}] 실패: {result[:150]}", "error")
-            return None
-
-        time.sleep(1)
-
-    return current_code
-
-
-def loop_worker(code, model_name):
-    log("자동개발루프 시작", "success")
-    current_code = code
-    max_cycles = 10
-
-    while st.session_state.running and st.session_state.cycles < max_cycles:
-        st.session_state.cycles += 1
-        log(f"═══ 사이클 {st.session_state.cycles} ═══", "info")
+        if",    "model": "o3-mini"},
+    " not st.session_state"═══ 사이클 {st.session_state.cycles} ═══", "info")
 
         result = run_cycle(current_code, model_name)
         if result is None:
@@ -237,7 +206,6 @@ def on_toggle():
             st.session_state.toggle = False
             return
 
-        # 키 확인
         openai_key, anthropic_key = get_api_keys()
         config = MODELS[model_name]
 
@@ -272,7 +240,6 @@ def main():
     init()
     openai_key, anthropic_key = get_api_keys()
 
-    # 키 상태 표시 (값은 안 보여줌)
     key_status = []
     if openai_key:
         key_status.append("OpenAI ✓")
@@ -286,21 +253,23 @@ def main():
     else:
         st.error("API 키가 설정되지 않았습니다. Streamlit Cloud > Settings > Secrets에서 설정하세요.")
         st.code("""
-# Secrets에 아래 형식으로 추가:
 OPENAI_API_KEY = "sk-proj-xxxxx"
 ANTHROPIC_API_KEY = "sk-ant-xxxxx"
         """)
         return
 
-    st.markdown("<p style='text-align:center; color:#6b7a8d;'>코드를 넣고 버튼 하나로 자동 개선</p>", unsafe_allow_html=True)
+    st.markdown(
+        "<p style='text-align:center; color:#6b7a8d;'>코드를 넣고 버튼 하나로 자동 개선</p>",
+        unsafe_allow_html=True,
+    )
 
-    # ─── 토글 ───
-    st.toggle(" ", value=st.session_state.running, key="toggle",
-              on_change=on_toggle, label_visibility="collapsed")
+    st.toggle(
+        " ", value=st.session_state.running, key="toggle",
+        on_change=on_toggle, label_visibility="collapsed",
+    )
 
     st.divider()
 
-    # ─── 상태 ───
     c1, c2, c3 = st.columns(3)
     with c1:
         st.metric("상태", "실행 중" if st.session_state.running else "대기 중")
@@ -311,8 +280,6 @@ ANTHROPIC_API_KEY = "sk-ant-xxxxx"
 
     st.divider()
 
-    # ─── 모델 선택 ───
-    # 사용 가능한 모델만 필터링
     available_models = []
     for name, cfg in MODELS.items():
         if cfg["provider"] == "openai" and openai_key:
@@ -321,24 +288,18 @@ ANTHROPIC_API_KEY = "sk-ant-xxxxx"
             available_models.append(name)
 
     st.selectbox(
-        "모델 선택",
-        available_models,
-        key="model_choice",
-        disabled=st.session_state.running,
+        "모델 선택", available_models,
+        key="model_choice", disabled=st.session_state.running,
     )
 
-    # ─── 코드 입력 ───
     st.text_area(
-        "코드 입력",
-        height=200,
-        key="code_input",
+        "코드 입력", height=200, key="code_input",
         placeholder="여기에 개선할 코드를 붙여넣으세요...",
         disabled=st.session_state.running,
     )
 
     st.divider()
 
-    # ─── 로그 ───
     st.markdown("### 📋 로그")
 
     if st.session_state.logs:
@@ -356,7 +317,6 @@ ANTHROPIC_API_KEY = "sk-ant-xxxxx"
     else:
         st.info("로그가 여기에 표시됩니다")
 
-    # ─── 결과 ───
     if "final_code" in st.session_state and st.session_state.final_code:
         st.divider()
         st.markdown("### ✅ 최종 결과")
